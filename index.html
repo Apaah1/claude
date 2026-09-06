@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>P2P Chat (micro)</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font-family: system-ui, sans-serif; max-width: 640px; margin: 2rem auto; padding: 0 1rem; }
+  h1 { font-size: 1.1rem; }
+  #join, #chat { display: flex; flex-direction: column; gap: .5rem; }
+  #chat { display: none; }
+  input, button { font: inherit; padding: .5rem; }
+  #log { border: 1px solid #8888; border-radius: 6px; height: 300px; overflow-y: auto; padding: .5rem; }
+  #log div { margin-bottom: .35rem; word-wrap: break-word; }
+  #log .me { color: #2a7; }
+  #log .sys { color: #888; font-style: italic; }
+  #row { display: flex; gap: .5rem; }
+  #row input { flex: 1; }
+  #status { font-size: .85rem; color: #888; }
+</style>
+</head>
+<body>
+<h1>P2P Chat — micro</h1>
+<p id="status">Enter a room code (shared secret) and a name to join.</p>
+
+<div id="join">
+  <input id="room" placeholder="Room code (this is your shared secret)" autocomplete="off">
+  <input id="name" placeholder="Your display name" autocomplete="off">
+  <button id="joinBtn">Join room</button>
+</div>
+
+<div id="chat">
+  <div id="log"></div>
+  <div id="row">
+    <input id="msg" placeholder="Message" autocomplete="off">
+    <button id="sendBtn">Send</button>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/peerjs@1.5.4/dist/peerjs.min.js"></script>
+<script>
+(() => {
+  const $ = (id) => document.getElementById(id);
+  const statusEl = $('status'), logEl = $('log');
+  let peer, key, name, isHost = false;
+  const conns = new Set();
+
+  function logLine(text, cls) {
+    const d = document.createElement('div');
+    if (cls) d.className = cls;
+    d.textContent = text;
+    logEl.appendChild(d);
+    logEl.scrollTop = logEl.scrollHeight;
+  }
+
+  // -- crypto: PBKDF2(roomCode) -> AES-GCM key. Room code is both the
+  // rendezvous secret (derives the peer id) and the encryption passphrase.
+  async function deriveRoom(code) {
+    const enc = new TextEncoder();
+    const material = await crypto.subtle.importKey('raw', enc.encode(code), 'PBKDF2', false, ['deriveKey', 'deriveBits']);
+    const aesKey = await crypto.subtle.deriveKey(
+      { name: 'PBKDF2', salt: enc.encode('p2p-chat-micro'), iterations: 100000, hash: 'SHA-256' },
+      material, { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']
+    );
+    const idBits = await crypto.subtle.deriveBits(
+      { name: 'PBKDF2', salt: enc.encode('p2p-chat-micro-id'), iterations: 100000, hash: 'SHA-256' },
+      material, 64
+    );
+    const peerId = 'r-' + Array.from(new Uint8Array(idBits)).map(b => b.toString(16).padStart(2, '0')).join('');
+    return { aesKey, peerId };
+  }
+
+  async function encrypt(text) {
+    const iv = crypto.getRandomValues(new Uint8Array(12));
+    const ct = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, new TextEncoder().encode(text));
+    return { iv: Array.from(iv), ct: Array.from(new Uint8Array(ct)) };
+  }
+
+  async function decrypt(payload) {
+    const iv = new Uint8Array(payload.iv);
+    const ct = new Uint8Array(payload.ct);
+    const buf = await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, key, ct);
+    return new TextDecoder().decode(buf);
+  }
+
+  function broadcast(payload, exceptConn) {
+    for (const c of conns) if (c !== exceptConn && c.open) c.send(payload);
+  }
+
+  function wireConnection(conn) {
+    conns.add(conn);
+    conn.on('data', async (payload) => {
+      if (isHost) broadcast(payload, conn); // relay encrypted blob to the rest of the room
+      try {
+        const obj = JSON.parse(await decrypt(payload));
+        logLine(`${obj.from}: ${obj.text}`);
+      } catch { /* not decryptable with our key — ignore */ }
+    });
+    conn.on('close', () => conns.delete(conn));
+  }
+
+  async function join() {
+    const code = $('room').value.trim();
+    name = $('name').value.trim() || 'anon';
+    if (!code) { statusEl.textContent = 'Room code is required.'; return; }
+
+    statusEl.textContent = 'Connecting…';
+    const room = await deriveRoom(code);
+    key = room.aesKey;
+
+    peer = new Peer(room.peerId);
+
+    peer.on('open', () => {
+      isHost = true;
+      statusEl.textContent = `In room as host (${name}).`;
+      logLine('You created this room.', 'sys');
+      showChat();
+    });
+
+    peer.on('connection', wireConnection);
+
+    peer.on('error', (err) => {
+      if (err.type === 'unavailable-id') {
+        // Someone already hosts this room — join as a guest instead.
+        peer.destroy();
+        peer = new Peer();
+        peer.on('open', () => {
+          const conn = peer.connect(room.peerId);
+          conn.on('open', () => {
+            isHost = false;
+            wireConnection(conn);
+            statusEl.textContent = `In room as guest (${name}).`;
+            logLine('You joined the room.', 'sys');
+            showChat();
+          });
+        });
+        peer.on('error', (e2) => { statusEl.textContent = 'Connection failed: ' + e2.type; });
+      } else {
+        statusEl.textContent = 'Error: ' + err.type;
+      }
+    });
+  }
+
+  function showChat() {
+    $('join').style.display = 'none';
+    $('chat').style.display = 'flex';
+    $('msg').focus();
+  }
+
+  async function send() {
+    const text = $('msg').value.trim();
+    if (!text) return;
+    $('msg').value = '';
+    logLine(`me: ${text}`, 'me');
+    const payload = await encrypt(JSON.stringify({ from: name, text }));
+    if (isHost) broadcast(payload);
+    else for (const c of conns) if (c.open) c.send(payload);
+  }
+
+  $('joinBtn').addEventListener('click', join);
+  $('sendBtn').addEventListener('click', send);
+  $('msg').addEventListener('keydown', (e) => { if (e.key === 'Enter') send(); });
+  $('room').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('name').focus(); });
+  $('name').addEventListener('keydown', (e) => { if (e.key === 'Enter') join(); });
+})();
+</script>
+</body>
+</html>
