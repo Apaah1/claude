@@ -8,43 +8,123 @@
   :root { color-scheme: light dark; }
   body { font-family: system-ui, sans-serif; max-width: 640px; margin: 2rem auto; padding: 0 1rem; }
   h1 { font-size: 1.1rem; }
-  #join, #chat { display: flex; flex-direction: column; gap: .5rem; }
-  #chat { display: none; }
-  input, button { font: inherit; padding: .5rem; }
-  #log { border: 1px solid #8888; border-radius: 6px; height: 300px; overflow-y: auto; padding: .5rem; }
+  h2 { font-size: .95rem; margin: 1rem 0 .25rem; }
+  section { display: flex; flex-direction: column; gap: .5rem; }
+  input, button, select { font: inherit; padding: .5rem; }
+  #app, #chat, #callPanel, #incomingBanner { display: none; }
+  #log { border: 1px solid #8888; border-radius: 6px; height: 260px; overflow-y: auto; padding: .5rem; }
   #log div { margin-bottom: .35rem; word-wrap: break-word; }
   #log .me { color: #2a7; }
   #log .sys { color: #888; font-style: italic; }
   #row { display: flex; gap: .5rem; }
   #row input { flex: 1; }
   #status { font-size: .85rem; color: #888; }
+  #identityBar { display: flex; align-items: center; gap: .5rem; flex-wrap: wrap; border-bottom: 1px solid #8884; padding-bottom: .75rem; margin-bottom: .25rem; }
+  #identityBar code { background: #8882; padding: .1rem .35rem; border-radius: 4px; }
+  #googleNotice { font-size: .85rem; color: #a70; }
+  .friend-row { display: flex; align-items: center; gap: .5rem; justify-content: space-between; border: 1px solid #8884; border-radius: 6px; padding: .4rem .6rem; }
+  .friend-row .actions { display: flex; gap: .35rem; }
+  #friendAdd { display: flex; gap: .5rem; }
+  #friendAdd input { flex: 1; }
+  #callControls { display: flex; align-items: center; gap: .5rem; }
+  #callPanel { flex-direction: column; gap: .5rem; border: 1px solid #8884; border-radius: 6px; padding: .5rem; }
+  #callPanel video { width: 100%; max-height: 220px; background: #000; border-radius: 6px; }
+  #localVideo { max-height: 90px; align-self: flex-end; width: 33%; }
+  .call-actions { display: flex; gap: .5rem; }
+  #incomingBanner { align-items: center; gap: .5rem; background: #2a72; border-radius: 6px; padding: .5rem; }
 </style>
 </head>
 <body>
 <h1>P2P Chat — micro</h1>
-<p id="status">Enter a room code (shared secret) and a name to join.</p>
+<p id="status">Sign in to get your unique ID, then add friends or join a room.</p>
 
-<div id="join">
-  <input id="room" placeholder="Room code (this is your shared secret)" autocomplete="off">
-  <input id="name" placeholder="Your display name" autocomplete="off">
-  <button id="joinBtn">Join room</button>
-</div>
+<section id="authSection">
+  <div id="googleNotice">Google sign-in isn't configured for this deployment yet (see the comment above <code>GOOGLE_CLIENT_ID</code> in the page source). Use Guest mode below in the meantime.</div>
+  <div id="gsiButton"></div>
+  <button id="guestBtn">Continue as guest</button>
+</section>
 
-<div id="chat">
-  <div id="log"></div>
-  <div id="row">
-    <input id="msg" placeholder="Message" autocomplete="off">
-    <button id="sendBtn">Send</button>
+<div id="app">
+  <div id="identityBar">
+    <span id="meName"></span> — your ID: <code id="meId"></code>
+    <button id="copyIdBtn">Copy ID</button>
+    <button id="signOutBtn">Sign out</button>
   </div>
+
+  <section id="friendsSection">
+    <h2>Friends</h2>
+    <div id="friendsList"></div>
+    <div id="friendAdd">
+      <input id="friendId" placeholder="Friend's 10-digit ID" inputmode="numeric" autocomplete="off">
+      <input id="friendLabel" placeholder="Label (optional)" autocomplete="off">
+      <button id="addFriendBtn">Add friend</button>
+    </div>
+  </section>
+
+  <section id="join">
+    <h2>Or join a room by code</h2>
+    <input id="room" placeholder="Room code (shared secret)" autocomplete="off">
+    <button id="joinBtn">Join room</button>
+  </section>
+
+  <section id="chat">
+    <h2>Chat</h2>
+    <div id="log"></div>
+    <div id="row">
+      <input id="msg" placeholder="Message" autocomplete="off">
+      <button id="sendBtn">Send</button>
+    </div>
+
+    <div id="callControls">
+      <label><input type="checkbox" id="callVideoToggle"> Video</label>
+      <select id="callQuality">
+        <option value="low">Low quality</option>
+        <option value="medium" selected>Medium quality</option>
+        <option value="high">High quality</option>
+      </select>
+      <button id="callBtn" disabled>Call</button>
+    </div>
+
+    <div id="incomingBanner">
+      Incoming call from <code id="incomingFrom"></code>
+      <button id="acceptCallBtn">Accept</button>
+      <button id="declineCallBtn">Decline</button>
+    </div>
+
+    <div id="callPanel">
+      <video id="remoteVideo" autoplay playsinline></video>
+      <video id="localVideo" autoplay playsinline muted></video>
+      <div class="call-actions">
+        <button id="muteMicBtn">Mute mic</button>
+        <button id="muteCamBtn">Mute camera</button>
+        <button id="hangupBtn">Hang up</button>
+      </div>
+    </div>
+  </section>
 </div>
 
 <script src="https://cdn.jsdelivr.net/npm/peerjs@1.5.4/dist/peerjs.min.js"></script>
+<script src="https://accounts.google.com/gsi/client" async defer></script>
 <script>
 (() => {
   const $ = (id) => document.getElementById(id);
   const statusEl = $('status'), logEl = $('log');
-  let peer, key, name, isHost = false;
+
+  // --- Google Sign-In setup ---
+  // 1. https://console.cloud.google.com/apis/credentials -> Create OAuth client ID -> Web application
+  // 2. Add the URL you'll load this page from (e.g. http://localhost:8080) under "Authorized JavaScript origins"
+  //    (Google Sign-In requires http(s); it will not run from a plain file:// page.)
+  // 3. Paste the client ID below.
+  const GOOGLE_CLIENT_ID = 'YOUR_GOOGLE_OAUTH_CLIENT_ID.apps.googleusercontent.com';
+
+  const LS_IDENTITY = 'p2pchat_identity';
+  const LS_FRIENDS = 'p2pchat_friends';
+  const LS_GUEST_SEED = 'p2pchat_guest_seed';
+
+  let me = null;
+  let peer, key, isHost = false, remotePeerId = null;
   const conns = new Set();
+  let localStream = null, activeCall = null, incomingCall = null;
 
   function logLine(text, cls) {
     const d = document.createElement('div');
@@ -54,8 +134,132 @@
     logEl.scrollTop = logEl.scrollHeight;
   }
 
-  // -- crypto: PBKDF2(roomCode) -> AES-GCM key. Room code is both the
-  // rendezvous secret (derives the peer id) and the encryption passphrase.
+  // ---------- identity: unique numeric ID + Google / guest sign-in ----------
+
+  function randomUUID() {
+    if (crypto.randomUUID) return crypto.randomUUID();
+    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+      const r = (Math.random() * 16) | 0, v = c === 'x' ? r : (r & 0x3) | 0x8;
+      return v.toString(16);
+    });
+  }
+
+  // A stable 10-digit ID derived from a seed (Google account sub, or a
+  // locally-persisted guest seed) — the same seed always yields the same ID.
+  async function numericIdFromSeed(seed) {
+    const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(seed));
+    const bytes = new Uint8Array(digest);
+    let n = 0n;
+    for (let i = 0; i < 6; i++) n = (n << 8n) | BigInt(bytes[i]);
+    return (n % 10000000000n).toString().padStart(10, '0');
+  }
+
+  function parseJwt(token) {
+    const payload = token.split('.')[1];
+    const json = decodeURIComponent(
+      atob(payload.replace(/-/g, '+').replace(/_/g, '/'))
+        .split('')
+        .map((c) => '%' + c.charCodeAt(0).toString(16).padStart(2, '0'))
+        .join('')
+    );
+    return JSON.parse(json);
+  }
+
+  async function handleGoogleCredential(resp) {
+    const payload = parseJwt(resp.credential);
+    const id = await numericIdFromSeed('google:' + payload.sub);
+    setIdentity({ type: 'google', id, name: payload.name || payload.email });
+  }
+
+  async function continueAsGuest() {
+    let seed = localStorage.getItem(LS_GUEST_SEED);
+    if (!seed) { seed = randomUUID(); localStorage.setItem(LS_GUEST_SEED, seed); }
+    const id = await numericIdFromSeed('guest:' + seed);
+    setIdentity({ type: 'guest', id, name: 'Guest-' + id.slice(-4) });
+  }
+
+  function setIdentity(identity) {
+    me = identity;
+    localStorage.setItem(LS_IDENTITY, JSON.stringify(identity));
+    renderIdentity();
+    showApp();
+  }
+
+  function loadIdentity() {
+    try { return JSON.parse(localStorage.getItem(LS_IDENTITY)); } catch { return null; }
+  }
+
+  function renderIdentity() {
+    $('meName').textContent = me.name;
+    $('meId').textContent = me.id;
+  }
+
+  function showApp() {
+    $('authSection').style.display = 'none';
+    $('app').style.display = 'block';
+    renderFriends();
+  }
+
+  function signOut() {
+    localStorage.removeItem(LS_IDENTITY);
+    location.reload();
+  }
+
+  // ---------- friends (stored locally, in this browser only) ----------
+
+  function loadFriends() {
+    try { return JSON.parse(localStorage.getItem(LS_FRIENDS)) || []; } catch { return []; }
+  }
+  function saveFriends(friends) { localStorage.setItem(LS_FRIENDS, JSON.stringify(friends)); }
+
+  function renderFriends() {
+    const friends = loadFriends();
+    const list = $('friendsList');
+    list.innerHTML = '';
+    if (!friends.length) {
+      list.innerHTML = '<div class="sys">No friends yet — add one by their ID number.</div>';
+      return;
+    }
+    for (const f of friends) {
+      const row = document.createElement('div');
+      row.className = 'friend-row';
+      const label = document.createElement('span');
+      label.innerHTML = `${f.label} <code>${f.id}</code>`;
+      const actions = document.createElement('div');
+      actions.className = 'actions';
+      const chatBtn = document.createElement('button');
+      chatBtn.textContent = 'Chat';
+      chatBtn.onclick = () => joinFriendRoom(f.id);
+      const removeBtn = document.createElement('button');
+      removeBtn.textContent = 'Remove';
+      removeBtn.onclick = () => { saveFriends(loadFriends().filter((x) => x.id !== f.id)); renderFriends(); };
+      actions.append(chatBtn, removeBtn);
+      row.append(label, actions);
+      list.appendChild(row);
+    }
+  }
+
+  function addFriend() {
+    const id = $('friendId').value.trim();
+    if (!/^\d{10}$/.test(id)) { alert('Enter a valid 10-digit ID.'); return; }
+    if (id === me.id) { alert("That's your own ID."); return; }
+    const label = $('friendLabel').value.trim() || ('Friend-' + id.slice(-4));
+    const friends = loadFriends();
+    if (friends.some((f) => f.id === id)) { alert('Already a friend.'); return; }
+    friends.push({ id, label });
+    saveFriends(friends);
+    $('friendId').value = '';
+    $('friendLabel').value = '';
+    renderFriends();
+  }
+
+  function joinFriendRoom(friendId) {
+    const code = ['friend', ...[me.id, friendId].sort()].join(':');
+    joinRoom(code);
+  }
+
+  // ---------- room / chat: PBKDF2(code) -> AES-GCM key + deterministic peer id ----------
+
   async function deriveRoom(code) {
     const enc = new TextEncoder();
     const material = await crypto.subtle.importKey('raw', enc.encode(code), 'PBKDF2', false, ['deriveKey', 'deriveBits']);
@@ -67,7 +271,7 @@
       { name: 'PBKDF2', salt: enc.encode('p2p-chat-micro-id'), iterations: 100000, hash: 'SHA-256' },
       material, 64
     );
-    const peerId = 'r-' + Array.from(new Uint8Array(idBits)).map(b => b.toString(16).padStart(2, '0')).join('');
+    const peerId = 'r-' + Array.from(new Uint8Array(idBits)).map((b) => b.toString(16).padStart(2, '0')).join('');
     return { aesKey, peerId };
   }
 
@@ -90,6 +294,8 @@
 
   function wireConnection(conn) {
     conns.add(conn);
+    remotePeerId = conn.peer;
+    $('callBtn').disabled = false;
     conn.on('data', async (payload) => {
       if (isHost) broadcast(payload, conn); // relay encrypted blob to the rest of the room
       try {
@@ -97,23 +303,33 @@
         logLine(`${obj.from}: ${obj.text}`);
       } catch { /* not decryptable with our key — ignore */ }
     });
-    conn.on('close', () => conns.delete(conn));
+    conn.on('close', () => { conns.delete(conn); if (!conns.size) { remotePeerId = null; $('callBtn').disabled = true; } });
   }
 
-  async function join() {
-    const code = $('room').value.trim();
-    name = $('name').value.trim() || 'anon';
+  function wirePeerCallHandling() {
+    peer.on('call', (call) => {
+      incomingCall = call;
+      $('incomingFrom').textContent = call.peer;
+      $('incomingBanner').style.display = 'flex';
+    });
+  }
+
+  async function joinRoom(code) {
     if (!code) { statusEl.textContent = 'Room code is required.'; return; }
+    if (peer) peer.destroy();
+    conns.clear();
+    remotePeerId = null;
 
     statusEl.textContent = 'Connecting…';
     const room = await deriveRoom(code);
     key = room.aesKey;
 
     peer = new Peer(room.peerId);
+    wirePeerCallHandling();
 
     peer.on('open', () => {
       isHost = true;
-      statusEl.textContent = `In room as host (${name}).`;
+      statusEl.textContent = `In room as host (${me.name}).`;
       logLine('You created this room.', 'sys');
       showChat();
     });
@@ -125,12 +341,13 @@
         // Someone already hosts this room — join as a guest instead.
         peer.destroy();
         peer = new Peer();
+        wirePeerCallHandling();
         peer.on('open', () => {
           const conn = peer.connect(room.peerId);
           conn.on('open', () => {
             isHost = false;
             wireConnection(conn);
-            statusEl.textContent = `In room as guest (${name}).`;
+            statusEl.textContent = `In room as guest (${me.name}).`;
             logLine('You joined the room.', 'sys');
             showChat();
           });
@@ -143,7 +360,6 @@
   }
 
   function showChat() {
-    $('join').style.display = 'none';
     $('chat').style.display = 'flex';
     $('msg').focus();
   }
@@ -153,16 +369,115 @@
     if (!text) return;
     $('msg').value = '';
     logLine(`me: ${text}`, 'me');
-    const payload = await encrypt(JSON.stringify({ from: name, text }));
+    const payload = await encrypt(JSON.stringify({ from: me.name, text }));
     if (isHost) broadcast(payload);
     else for (const c of conns) if (c.open) c.send(payload);
   }
 
-  $('joinBtn').addEventListener('click', join);
+  // ---------- calls: audio/video over PeerJS media calls, with quality + mute settings ----------
+
+  const QUALITY_PRESETS = {
+    low: { width: 320, height: 240, frameRate: 15 },
+    medium: { width: 640, height: 480, frameRate: 24 },
+    high: { width: 1280, height: 720, frameRate: 30 },
+  };
+
+  function currentConstraints() {
+    const videoOn = $('callVideoToggle').checked;
+    if (!videoOn) return { audio: true, video: false };
+    return { audio: true, video: QUALITY_PRESETS[$('callQuality').value] };
+  }
+
+  function attachLocalStream() {
+    $('localVideo').srcObject = localStream;
+  }
+
+  function showCallPanel() { $('callPanel').style.display = 'flex'; }
+
+  function wireCall(call) {
+    activeCall = call;
+    call.on('stream', (remoteStream) => { $('remoteVideo').srcObject = remoteStream; showCallPanel(); });
+    call.on('close', endCall);
+    showCallPanel();
+  }
+
+  async function startCall() {
+    if (!remotePeerId) { alert('Not connected to anyone yet.'); return; }
+    localStream = await navigator.mediaDevices.getUserMedia(currentConstraints());
+    attachLocalStream();
+    wireCall(peer.call(remotePeerId, localStream));
+  }
+
+  async function acceptCall() {
+    $('incomingBanner').style.display = 'none';
+    localStream = await navigator.mediaDevices.getUserMedia(currentConstraints());
+    attachLocalStream();
+    incomingCall.answer(localStream);
+    wireCall(incomingCall);
+    incomingCall = null;
+  }
+
+  function declineCall() {
+    incomingCall.close();
+    incomingCall = null;
+    $('incomingBanner').style.display = 'none';
+  }
+
+  function toggleMic() {
+    const track = localStream && localStream.getAudioTracks()[0];
+    if (!track) return;
+    track.enabled = !track.enabled;
+    $('muteMicBtn').textContent = track.enabled ? 'Mute mic' : 'Unmute mic';
+  }
+
+  function toggleCam() {
+    const track = localStream && localStream.getVideoTracks()[0];
+    if (!track) return;
+    track.enabled = !track.enabled;
+    $('muteCamBtn').textContent = track.enabled ? 'Mute camera' : 'Unmute camera';
+  }
+
+  function endCall() {
+    if (activeCall) activeCall.close();
+    if (localStream) localStream.getTracks().forEach((t) => t.stop());
+    localStream = null;
+    activeCall = null;
+    $('callPanel').style.display = 'none';
+  }
+
+  // ---------- wiring ----------
+
+  $('guestBtn').addEventListener('click', continueAsGuest);
+  $('copyIdBtn').addEventListener('click', () => navigator.clipboard.writeText(me.id));
+  $('signOutBtn').addEventListener('click', signOut);
+  $('addFriendBtn').addEventListener('click', addFriend);
+  $('joinBtn').addEventListener('click', () => joinRoom($('room').value.trim()));
+  $('room').addEventListener('keydown', (e) => { if (e.key === 'Enter') joinRoom($('room').value.trim()); });
   $('sendBtn').addEventListener('click', send);
   $('msg').addEventListener('keydown', (e) => { if (e.key === 'Enter') send(); });
-  $('room').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('name').focus(); });
-  $('name').addEventListener('keydown', (e) => { if (e.key === 'Enter') join(); });
+  $('callBtn').addEventListener('click', startCall);
+  $('acceptCallBtn').addEventListener('click', acceptCall);
+  $('declineCallBtn').addEventListener('click', declineCall);
+  $('muteMicBtn').addEventListener('click', toggleMic);
+  $('muteCamBtn').addEventListener('click', toggleCam);
+  $('hangupBtn').addEventListener('click', endCall);
+
+  function initGoogle() {
+    if (GOOGLE_CLIENT_ID.startsWith('YOUR_')) {
+      $('googleNotice').style.display = 'block';
+      return;
+    }
+    $('googleNotice').style.display = 'none';
+    window.google.accounts.id.initialize({ client_id: GOOGLE_CLIENT_ID, callback: handleGoogleCredential });
+    window.google.accounts.id.renderButton($('gsiButton'), { theme: 'outline', size: 'large' });
+  }
+
+  window.addEventListener('DOMContentLoaded', () => {
+    const saved = loadIdentity();
+    if (saved) { me = saved; renderIdentity(); showApp(); }
+    // Give the Google script a moment to load before rendering its button.
+    setTimeout(initGoogle, 300);
+  });
 })();
 </script>
 </body>
