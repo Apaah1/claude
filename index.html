@@ -4,6 +4,10 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>P2P Chat (micro)</title>
+<link rel="manifest" href="manifest.json">
+<link rel="icon" href="icons/icon-192.png">
+<link rel="apple-touch-icon" href="icons/icon-192.png">
+<meta name="theme-color" content="#107a5a">
 <style>
   :root { color-scheme: light dark; }
   body { font-family: system-ui, sans-serif; max-width: 640px; margin: 2rem auto; padding: 0 1rem; }
@@ -37,7 +41,7 @@
 </style>
 </head>
 <body>
-<h1>P2P Chat — micro</h1>
+<h1>P2P Chat — micro <button id="installBtn" hidden>Install app</button></h1>
 <p id="status">Sign in to get your unique ID, then add friends or join a room.</p>
 
 <section id="authSection">
@@ -538,6 +542,27 @@
     // Give the Google script a moment to load before rendering its button.
     setTimeout(initGoogle, 300);
   });
+
+  // ---------- installable as a desktop/home-screen app (PWA) ----------
+
+  if ('serviceWorker' in navigator) {
+    window.addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(() => {}));
+  }
+
+  let deferredInstallPrompt = null;
+  window.addEventListener('beforeinstallprompt', (e) => {
+    e.preventDefault();
+    deferredInstallPrompt = e;
+    $('installBtn').hidden = false;
+  });
+  $('installBtn').addEventListener('click', async () => {
+    if (!deferredInstallPrompt) return;
+    deferredInstallPrompt.prompt();
+    await deferredInstallPrompt.userChoice;
+    deferredInstallPrompt = null;
+    $('installBtn').hidden = true;
+  });
+  window.addEventListener('appinstalled', () => { $('installBtn').hidden = true; });
 })();
 </script>
 </body>

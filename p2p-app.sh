@@ -96,6 +96,12 @@ do_build() {
     -o "$DIST_DIR/index.html" "$APP_FILE" \
     || cp "$APP_FILE" "$DIST_DIR/index.html"  # fallback: copy unminified if minifier fails
 
+  # PWA assets referenced by index.html (manifest, service worker, icons)
+  # ship as-is alongside it so the packaged build is installable too.
+  [ -f manifest.json ] && cp manifest.json "$DIST_DIR/"
+  [ -f sw.js ] && cp sw.js "$DIST_DIR/"
+  [ -d icons ] && cp -r icons "$DIST_DIR/"
+
   ( cd "$DIST_DIR" && zip -q -r "../p2p-app-build.zip" . )
   log "Build ready: $DIST_DIR/index.html and p2p-app-build.zip"
 }
