@@ -16,6 +16,8 @@
   #log div { margin-bottom: .35rem; word-wrap: break-word; }
   #log .me { color: #2a7; }
   #log .sys { color: #888; font-style: italic; }
+  #log img { max-width: 100%; max-height: 220px; border-radius: 6px; display: block; margin-top: .25rem; }
+  #log a { display: inline-block; margin-top: .25rem; }
   #row { display: flex; gap: .5rem; }
   #row input { flex: 1; }
   #status { font-size: .85rem; color: #888; }
@@ -72,6 +74,8 @@
     <div id="log"></div>
     <div id="row">
       <input id="msg" placeholder="Message" autocomplete="off">
+      <input id="fileInput" type="file" hidden>
+      <button id="attachBtn" title="Attach a photo or file">📎</button>
       <button id="sendBtn">Send</button>
     </div>
 
@@ -130,6 +134,35 @@
     const d = document.createElement('div');
     if (cls) d.className = cls;
     d.textContent = text;
+    logEl.appendChild(d);
+    logEl.scrollTop = logEl.scrollHeight;
+  }
+
+  function formatSize(bytes) {
+    if (bytes < 1024) return bytes + ' B';
+    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+    return (bytes / 1024 / 1024).toFixed(1) + ' MB';
+  }
+
+  // Renders a text message or a file/photo attachment (obj.kind: 'text' | 'file').
+  function appendMessage(label, obj, cls) {
+    const d = document.createElement('div');
+    if (cls) d.className = cls;
+    d.appendChild(document.createTextNode(label + ': ' + (obj.kind === 'text' ? obj.text : '')));
+    if (obj.kind === 'file') {
+      if (obj.mime && obj.mime.startsWith('image/')) {
+        const img = document.createElement('img');
+        img.src = obj.dataUrl;
+        img.alt = obj.name;
+        d.appendChild(img);
+      } else {
+        const link = document.createElement('a');
+        link.href = obj.dataUrl;
+        link.download = obj.name;
+        link.textContent = `⬇ ${obj.name} (${formatSize(obj.size)})`;
+        d.appendChild(link);
+      }
+    }
     logEl.appendChild(d);
     logEl.scrollTop = logEl.scrollHeight;
   }
@@ -300,7 +333,7 @@
       if (isHost) broadcast(payload, conn); // relay encrypted blob to the rest of the room
       try {
         const obj = JSON.parse(await decrypt(payload));
-        logLine(`${obj.from}: ${obj.text}`);
+        appendMessage(obj.from, obj);
       } catch { /* not decryptable with our key — ignore */ }
     });
     conn.on('close', () => { conns.delete(conn); if (!conns.size) { remotePeerId = null; $('callBtn').disabled = true; } });
@@ -364,14 +397,35 @@
     $('msg').focus();
   }
 
+  async function sendPayload(obj) {
+    appendMessage('me', obj, 'me');
+    const payload = await encrypt(JSON.stringify(obj));
+    if (isHost) broadcast(payload);
+    else for (const c of conns) if (c.open) c.send(payload);
+  }
+
   async function send() {
     const text = $('msg').value.trim();
     if (!text) return;
     $('msg').value = '';
-    logLine(`me: ${text}`, 'me');
-    const payload = await encrypt(JSON.stringify({ from: me.name, text }));
-    if (isHost) broadcast(payload);
-    else for (const c of conns) if (c.open) c.send(payload);
+    await sendPayload({ from: me.name, kind: 'text', text });
+  }
+
+  const MAX_FILE_BYTES = 5 * 1024 * 1024; // keep the data channel responsive
+
+  async function sendFile(file) {
+    if (!file) return;
+    if (file.size > MAX_FILE_BYTES) {
+      alert(`"${file.name}" is ${formatSize(file.size)} — attachments are limited to ${formatSize(MAX_FILE_BYTES)}.`);
+      return;
+    }
+    const dataUrl = await new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result);
+      reader.onerror = () => reject(reader.error);
+      reader.readAsDataURL(file);
+    });
+    await sendPayload({ from: me.name, kind: 'file', name: file.name, mime: file.type, size: file.size, dataUrl });
   }
 
   // ---------- calls: audio/video over PeerJS media calls, with quality + mute settings ----------
@@ -455,6 +509,12 @@
   $('room').addEventListener('keydown', (e) => { if (e.key === 'Enter') joinRoom($('room').value.trim()); });
   $('sendBtn').addEventListener('click', send);
   $('msg').addEventListener('keydown', (e) => { if (e.key === 'Enter') send(); });
+  $('attachBtn').addEventListener('click', () => $('fileInput').click());
+  $('fileInput').addEventListener('change', () => {
+    const file = $('fileInput').files[0];
+    $('fileInput').value = '';
+    sendFile(file);
+  });
   $('callBtn').addEventListener('click', startCall);
   $('acceptCallBtn').addEventListener('click', acceptCall);
   $('declineCallBtn').addEventListener('click', declineCall);
